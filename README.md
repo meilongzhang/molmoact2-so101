@@ -18,37 +18,29 @@ The RealSense needs a **USB 3 data cable** (not charge-only) and a USB 3 port. O
 
 ## Environment setup
 
-**Python 3.10 or 3.11.** (3.12 has had compatibility issues with some LeRobot dependencies.)
+**Python 3.12.** LeRobot 0.5.x requires Python ≥ 3.12 on PyPI, and the 0.5.1 pin below is non-negotiable (see [Calibration](#calibration) for why). Older LeRobot releases ran on 3.10/3.11, but those won't work for this repo.
 
 ```bash
-conda create -n molmoact python=3.11 -y
+conda create -n molmoact python=3.12 -y
 conda activate molmoact
 ```
 
-**PyTorch** — install the CUDA wheel for your driver from [pytorch.org](https://pytorch.org/get-started/locally/). Example for CUDA 12.1:
-
-```bash
-pip install torch --index-url https://download.pytorch.org/whl/cu121
-```
-
-**LeRobot** — pin to exactly 0.5.1 (see [Calibration](#calibration) below for why):
-
-```bash
-pip install lerobot==0.5.1
-```
-
-**Everything else:**
-
-```bash
-pip install transformers>=4.47.0 huggingface-hub>=0.24.0 \
-            opencv-python>=4.8 pyrealsense2>=2.54 Pillow>=10 numpy>=1.24
-```
-
-Or use the provided requirements file:
+**Install everything in one shot:**
 
 ```bash
 pip install -r requirements.txt
 ```
+
+This installs PyTorch (CUDA 12.1 wheels by default), `lerobot==0.5.1`, the Feetech servo SDK, the HuggingFace stack, the camera libs, and numpy.
+
+**Pins worth knowing:**
+
+| Package | Pin | Why |
+|---|---|---|
+| `lerobot` | `==0.5.1` | Joint-angle convention — see [Calibration](#calibration). |
+| `transformers` | `>=4.52.0` | MolmoAct2's processor imports `transformers.video_utils`, added in 4.52. Earlier versions fail at processor load with `ModuleNotFoundError: No module named 'transformers.video_utils'`. |
+| `feetech-servo-sdk` | (any) | SO-101 motor bus. Without it, `inference.py` silently falls back to a simulated follower and the arm will not move. |
+| `torch` | CUDA 12.1 wheels | If your driver needs a different CUDA, install torch manually first from [pytorch.org](https://pytorch.org/get-started/locally/), then re-run `pip install -r requirements.txt` (pip will skip the satisfied torch line). |
 
 **MolmoAct2 weights** are downloaded automatically from HuggingFace on first run via `transformers` with `trust_remote_code=True`. No separate install needed.
 

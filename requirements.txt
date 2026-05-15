@@ -1,10 +1,12 @@
-# PyTorch — install CUDA wheels from https://pytorch.org/get-started/locally/
-# Example for CUDA 12.1:
-#   pip install torch --index-url https://download.pytorch.org/whl/cu121
+# PyTorch CUDA 12.1 wheels (default). For a different CUDA version,
+# install torch manually first from https://pytorch.org/get-started/locally/
+# and then run `pip install -r requirements.txt` — pip will skip the already-
+# satisfied torch line.
+--extra-index-url https://download.pytorch.org/whl/cu121
 torch>=2.1.0
 
 # HuggingFace stack (MolmoAct2 is loaded via transformers + trust_remote_code)
-transformers>=4.47.0
+transformers>=4.52.0
 huggingface-hub>=0.24.0
 
 # LeRobot SO-101 drivers
@@ -12,6 +14,12 @@ huggingface-hub>=0.24.0
 # convention and will cause the arm to slam into the table on startup.
 # See https://huggingface.co/docs/lerobot/backwardcomp
 lerobot==0.5.1
+
+# Feetech servo SDK — required for the SO-101 motor bus.
+# Without it, inference.py silently falls back to a simulated follower
+# (the [Follower] Could not connect: No module named 'scservo_sdk' message)
+# and the arm will not move.
+feetech-servo-sdk
 
 # Cameras
 opencv-python>=4.8.0

@@ -152,7 +152,7 @@ class MolmoActPolicy:
                 task=prompt,
                 state=state,
                 norm_tag=self.norm_tag,
-                action_mode="continuous",
+                inference_action_mode="continuous",
                 enable_depth_reasoning=False,
                 num_steps=num_steps,
                 normalize_language=True,
