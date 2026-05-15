@@ -11,7 +11,7 @@ import threading
 import cv2
 import numpy as np
 
-from wrist_v4l2 import set_v4l2, reset_wrist_to_auto
+from .wrist_v4l2 import set_v4l2, reset_wrist_to_auto
 
 
 FLIP_CHOICES = ["v", "h", "180", "none"]

@@ -32,8 +32,8 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from policy import ACTION_FPS, MolmoActPolicy
-from frame_transforms import JOINT_COUNT, clip_action
+from .policy import ACTION_FPS, MolmoActPolicy
+from ..setup.frame_transforms import JOINT_COUNT, clip_action
 
 
 def _bgr_to_pil(img_bgr: np.ndarray) -> Image.Image:

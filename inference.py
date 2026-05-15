@@ -23,11 +23,13 @@ import time
 import cv2
 import numpy as np
 
-from robot import FollowerArm, RealSenseCapture
-from policy import MolmoActPolicy, REPO_ID, DTYPES as _DTYPES
-from runtime import AsyncPolicyRunner, RuntimeConfig
-from frame_transforms import parse_joint_limits, parse_joint_offsets, parse_joint_signs
-from wrist_camera import WristCamera, FLIP_CHOICES
+from molmoact_so101.setup.robot import FollowerArm, RealSenseCapture
+from molmoact_so101.setup.wrist_camera import WristCamera, FLIP_CHOICES
+from molmoact_so101.setup.frame_transforms import (
+    parse_joint_limits, parse_joint_offsets, parse_joint_signs,
+)
+from molmoact_so101.model.policy import MolmoActPolicy, REPO_ID, DTYPES as _DTYPES
+from molmoact_so101.model.runtime import AsyncPolicyRunner, RuntimeConfig
 
 
 def parse_args():
