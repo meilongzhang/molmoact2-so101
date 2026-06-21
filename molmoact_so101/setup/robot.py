@@ -11,7 +11,9 @@ for non-blocking access. Depth is captured but not forwarded to the model
 """
 import threading
 import time
+from abc import ABC, abstractmethod
 
+import cv2
 import numpy as np
 
 
@@ -134,90 +136,253 @@ class FollowerArm:
             self.robot.disconnect()
 
 
-class RealSenseCapture:
-    """Opens one pyrealsense2 pipeline for colour (RGB) at 640×480.
+class SceneCaptureBase(ABC):
+    """Base class for scene cameras used by AsyncPolicyRunner.
 
-    Automatically selects USB 2.1 vs USB 3 frame rate (15 vs 30 fps).
-    A background thread continuously pulls frames into a locked slot.
+    Subclasses must return BGR uint8 frames from _read_frame().
     """
 
-    def __init__(self, serial: str | None = None):
-        import pyrealsense2 as rs
+    name = "SceneCapture"
 
-        devices = list(rs.context().query_devices())
-        if not devices:
-            raise RuntimeError(
-                "No RealSense devices found. "
-                "Check the USB cable (needs real USB-3 data cable, not charge-only) "
-                "and run `rs-enumerate-devices`."
-            )
-
-        print("[RealSense] Available devices:")
-        for d in devices:
-            print(f"  - {d.get_info(rs.camera_info.name)} "
-                  f"(serial {d.get_info(rs.camera_info.serial_number)}, "
-                  f"usb {d.get_info(rs.camera_info.usb_type_descriptor)})")
-
-        if serial is not None:
-            match = next(
-                (d for d in devices
-                 if d.get_info(rs.camera_info.serial_number) == serial), None
-            )
-            if match is None:
-                raise RuntimeError(f"RealSense serial {serial!r} not found")
-            device = match
-        else:
-            device = devices[0]
-
-        chosen_serial = device.get_info(rs.camera_info.serial_number)
-        usb_desc      = device.get_info(rs.camera_info.usb_type_descriptor)
-        fps = 30 if usb_desc.startswith("3") else 15
-        print(f"[RealSense] Using serial {chosen_serial}, USB {usb_desc} → {fps} fps")
-
-        pipeline = rs.pipeline()
-        cfg = rs.config()
-        cfg.enable_device(chosen_serial)
-        cfg.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, fps)
-        cfg.enable_stream(rs.stream.depth, 640, 480, rs.format.z16,  fps)
-        pipeline.start(cfg)
-
-        self.pipeline = pipeline
-        self.align    = rs.align(rs.stream.color)
-        self._color   = None
-        self._lock    = threading.Lock()
-        self._stop    = threading.Event()
-        self._thread  = threading.Thread(target=self._loop, daemon=True)
+    def __init__(self):
+        self._color = None
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
-        print("[RealSense] Pipeline started")
+
+    @abstractmethod
+    def _read_frame(self):
+        """Return latest BGR frame, or None if unavailable."""
+        pass
+
+    @abstractmethod
+    def _stop_backend(self):
+        """Release camera-specific resources."""
+        pass
 
     def _loop(self):
-        err_count    = 0
+        err_count = 0
         err_last_log = 0.0
+
         while not self._stop.is_set():
             try:
-                frames  = self.pipeline.wait_for_frames(timeout_ms=1000)
-                aligned = self.align.process(frames)
-                cf = aligned.get_color_frame()
-                if cf:
-                    img = np.asanyarray(cf.get_data()).copy()
+                frame = self._read_frame()
+
+                if frame is not None:
                     with self._lock:
-                        self._color = img
+                        self._color = frame.copy()
+                else:
+                    time.sleep(0.05)
+
             except Exception as e:
                 if not self._stop.is_set():
                     err_count += 1
                     now = time.monotonic()
-                    if now - err_last_log > 10.0:
-                        print(f"[RealSense] capture error x{err_count}: {e}")
-                        err_count    = 0
+                    if now - err_last_log > 5.0:
+                        print(f"[{self.name}] capture error x{err_count}: {e}")
+                        err_count = 0
                         err_last_log = now
                     time.sleep(0.1)
 
     def get_latest_color(self):
         with self._lock:
-            return self._color
+            return None if self._color is None else self._color.copy()
 
     def release(self):
         self._stop.set()
         self._thread.join(timeout=2.0)
+        self._stop_backend()
+        print(f"[{self.name}] stopped")
+
+class OpenCVCapture(SceneCaptureBase):
+    name = "OpenCVCapture"
+
+    def __init__(
+        self,
+        cam_id: int = 1,
+        width: int = 640,
+        height: int = 480,
+        fps: int = 30,
+    ):
+        self.cam_id = cam_id
+        self.cap = cv2.VideoCapture(cam_id, cv2.CAP_AVFOUNDATION)
+
+        if not self.cap.isOpened():
+            raise RuntimeError(f"Could not open OpenCV scene camera at index {cam_id}")
+
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        self.cap.set(cv2.CAP_PROP_FPS, fps)
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+        print(f"[OpenCVCapture] Camera {cam_id} started at {width}x{height}@{fps}")
+
+        super().__init__()
+
+    def _read_frame(self):
+        self.cap.grab()
+        ok, frame = self.cap.read()
+        if not ok:
+            return None
+        return frame
+
+    def _stop_backend(self):
+        self.cap.release()
+
+class RealSenseCapture(SceneCaptureBase):
+    name = "RealSense"
+
+    def __init__(self, serial: str | None = None):
+        import pyrealsense2 as rs
+
+        self.rs = rs
+
+        devices = list(rs.context().query_devices())
+        if not devices:
+            raise RuntimeError(
+                "No RealSense devices found. "
+                "Check the USB cable and run `rs-enumerate-devices`."
+            )
+
+        print("[RealSense] Available devices:")
+        for d in devices:
+            print(
+                f"  - {d.get_info(rs.camera_info.name)} "
+                f"(serial {d.get_info(rs.camera_info.serial_number)}, "
+                f"usb {d.get_info(rs.camera_info.usb_type_descriptor)})"
+            )
+
+        if serial is not None:
+            device = next(
+                (
+                    d for d in devices
+                    if d.get_info(rs.camera_info.serial_number) == serial
+                ),
+                None,
+            )
+            if device is None:
+                raise RuntimeError(f"RealSense serial {serial!r} not found")
+        else:
+            device = devices[0]
+
+        chosen_serial = device.get_info(rs.camera_info.serial_number)
+        usb_desc = device.get_info(rs.camera_info.usb_type_descriptor)
+        fps = 30 if usb_desc.startswith("3") else 15
+
+        print(f"[RealSense] Using serial {chosen_serial}, USB {usb_desc} → {fps} fps")
+
+        self.pipeline = rs.pipeline()
+        cfg = rs.config()
+        cfg.enable_device(chosen_serial)
+        cfg.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, fps)
+        cfg.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, fps)
+
+        self.pipeline.start(cfg)
+        self.align = rs.align(rs.stream.color)
+
+        print("[RealSense] Pipeline started")
+
+        super().__init__()
+
+    def _read_frame(self):
+        frames = self.pipeline.wait_for_frames(timeout_ms=1000)
+        aligned = self.align.process(frames)
+        cf = aligned.get_color_frame()
+
+        if not cf:
+            return None
+
+        return np.asanyarray(cf.get_data()).copy()
+
+    def _stop_backend(self):
         self.pipeline.stop()
-        print("[RealSense] Pipeline stopped")
+
+
+# class RealSenseCapture:
+#     """Opens one pyrealsense2 pipeline for colour (RGB) at 640×480.
+
+#     Automatically selects USB 2.1 vs USB 3 frame rate (15 vs 30 fps).
+#     A background thread continuously pulls frames into a locked slot.
+#     """
+
+#     def __init__(self, serial: str | None = None):
+#         import pyrealsense2 as rs
+
+#         devices = list(rs.context().query_devices())
+#         if not devices:
+#             raise RuntimeError(
+#                 "No RealSense devices found. "
+#                 "Check the USB cable (needs real USB-3 data cable, not charge-only) "
+#                 "and run `rs-enumerate-devices`."
+#             )
+
+#         print("[RealSense] Available devices:")
+#         for d in devices:
+#             print(f"  - {d.get_info(rs.camera_info.name)} "
+#                   f"(serial {d.get_info(rs.camera_info.serial_number)}, "
+#                   f"usb {d.get_info(rs.camera_info.usb_type_descriptor)})")
+
+#         if serial is not None:
+#             match = next(
+#                 (d for d in devices
+#                  if d.get_info(rs.camera_info.serial_number) == serial), None
+#             )
+#             if match is None:
+#                 raise RuntimeError(f"RealSense serial {serial!r} not found")
+#             device = match
+#         else:
+#             device = devices[0]
+
+#         chosen_serial = device.get_info(rs.camera_info.serial_number)
+#         usb_desc      = device.get_info(rs.camera_info.usb_type_descriptor)
+#         fps = 30 if usb_desc.startswith("3") else 15
+#         print(f"[RealSense] Using serial {chosen_serial}, USB {usb_desc} → {fps} fps")
+
+#         pipeline = rs.pipeline()
+#         cfg = rs.config()
+#         cfg.enable_device(chosen_serial)
+#         cfg.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, fps)
+#         cfg.enable_stream(rs.stream.depth, 640, 480, rs.format.z16,  fps)
+#         pipeline.start(cfg)
+
+#         self.pipeline = pipeline
+#         self.align    = rs.align(rs.stream.color)
+#         self._color   = None
+#         self._lock    = threading.Lock()
+#         self._stop    = threading.Event()
+#         self._thread  = threading.Thread(target=self._loop, daemon=True)
+#         self._thread.start()
+#         print("[RealSense] Pipeline started")
+
+#     def _loop(self):
+#         err_count    = 0
+#         err_last_log = 0.0
+#         while not self._stop.is_set():
+#             try:
+#                 frames  = self.pipeline.wait_for_frames(timeout_ms=1000)
+#                 aligned = self.align.process(frames)
+#                 cf = aligned.get_color_frame()
+#                 if cf:
+#                     img = np.asanyarray(cf.get_data()).copy()
+#                     with self._lock:
+#                         self._color = img
+#             except Exception as e:
+#                 if not self._stop.is_set():
+#                     err_count += 1
+#                     now = time.monotonic()
+#                     if now - err_last_log > 10.0:
+#                         print(f"[RealSense] capture error x{err_count}: {e}")
+#                         err_count    = 0
+#                         err_last_log = now
+#                     time.sleep(0.1)
+
+#     def get_latest_color(self):
+#         with self._lock:
+#             return self._color
+
+#     def release(self):
+#         self._stop.set()
+#         self._thread.join(timeout=2.0)
+#         self.pipeline.stop()
+#         print("[RealSense] Pipeline stopped")

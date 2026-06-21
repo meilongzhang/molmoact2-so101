@@ -6,6 +6,7 @@ join → release cap → reset v4l2 to auto) matters: a naive sequence races
 and can leave the next consumer with a stuck-manual camera.
 """
 import os
+import sys
 import threading
 
 import cv2
@@ -24,34 +25,51 @@ class WristCamera:
         self.flip_code = _FLIP_CODES.get(flip)  # None for "none"
         self._cap = None
         self._ae = None
+        self._use_v4l2 = sys.platform.startswith("linux")
 
-        dev = f"/dev/video{cam_id}"
-        if not os.path.exists(dev):
-            present = sorted(p for p in os.listdir("/dev") if p.startswith("video"))
-            raise FileNotFoundError(
-                f"{dev} does not exist — wrist camera not connected. "
-                f"Available video devices: {present}. "
-                f"Check with `v4l2-ctl --list-devices`."
-            )
-        cap = cv2.VideoCapture(cam_id)
+        if self._use_v4l2:
+            dev = f"/dev/video{cam_id}"
+            if not os.path.exists(dev):
+                present = sorted(
+                    p for p in os.listdir("/dev") if p.startswith("video")
+                )
+                raise FileNotFoundError(
+                    f"{dev} does not exist — wrist camera not connected. "
+                    f"Available video devices: {present}. "
+                    f"Check with `v4l2-ctl --list-devices`."
+                )
+            cap = cv2.VideoCapture(cam_id)
+        else:
+            # macOS: cameras are opened by OpenCV/AVFoundation index,
+            # not by /dev/videoN.
+            cap = cv2.VideoCapture(cam_id, cv2.CAP_AVFOUNDATION)
+
         if not cap.isOpened():
             raise RuntimeError(f"Could not open wrist camera at index {cam_id}")
+
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         cap.set(cv2.CAP_PROP_FPS, 30)
-        # Lock white balance to a fixed temperature — auto WB drift between
-        # sessions can collapse predicted action deltas to near zero.
-        set_v4l2(
-            cam_id,
-            white_balance_automatic=0,
-            white_balance_temperature=4600,
-            auto_exposure=1,
-            brightness=32,
-        )
+
+        if self._use_v4l2:
+            set_v4l2(
+                cam_id,
+                white_balance_automatic=0,
+                white_balance_temperature=4600,
+                auto_exposure=1,
+                brightness=32,
+            )
+        else:
+            print("[WristCamera] macOS detected; skipping v4l2 camera controls.")
+
         self._cap = cap
+
         if enable_ae:
-            self._ae = _AEController(cam_id)
+            if self._use_v4l2:
+                self._ae = _AEController(cam_id)
+            else:
+                print("[WristCamera] macOS detected; disabling v4l2 AE controller.")
 
     def read(self):
         self._cap.grab()  # flush stale buffered frame
@@ -69,13 +87,17 @@ class WristCamera:
     def close(self):
         if self._cap is None:
             return
+
         if self._ae is not None:
             self._ae.stop()
             self._ae.join(timeout=2.0)
             self._ae = None
+
         self._cap.release()
         self._cap = None
-        reset_wrist_to_auto(self.cam_id)
+
+        if self._use_v4l2:
+            reset_wrist_to_auto(self.cam_id)
 
 
 class _AEController:

@@ -23,12 +23,11 @@ import time
 import cv2
 import numpy as np
 
-from molmoact_so101.setup.robot import FollowerArm, RealSenseCapture
+from molmoact_so101.setup.robot import FollowerArm, SceneCaptureBase, OpenCVCapture, RealSenseCapture
 from molmoact_so101.setup.wrist_camera import WristCamera, FLIP_CHOICES
 from molmoact_so101.setup.frame_transforms import (
     parse_joint_limits, parse_joint_offsets, parse_joint_signs,
 )
-from molmoact_so101.model.policy import MolmoActPolicy, REPO_ID, DTYPES as _DTYPES
 from molmoact_so101.model.runtime import AsyncPolicyRunner, RuntimeConfig
 from remote_policy_client import RemoteMolmoActPolicy
 
@@ -44,6 +43,9 @@ def parse_args():
                    help="Flip the wrist image to match training orientation.")
     p.add_argument("--realsense-serial", default=None,
                    help="RealSense D455 serial number. Omit to use the first device found.")
+    p.add_argument("--scene-cam-id", type=int, default=1,
+                   help="OpenCV index of the scene USB camera. "
+                        "Find yours with `v4l2-ctl --list-devices`.")
     # ── Task ─────────────────────────────────────────────────────────────────
     p.add_argument("--prompt", required=True,
                    help="Natural-language task instruction, e.g. "
@@ -56,8 +58,6 @@ def parse_args():
                         "the model. Default: full chunk (~30 steps at 30 fps).")
     p.add_argument("--exec-hz", type=float, default=30.0,
                    help="Rate at which joint targets are sent to the arm (Hz).")
-    p.add_argument("--device", default="cuda")
-    p.add_argument("--dtype", default="bfloat16", choices=list(_DTYPES))
     p.add_argument("--cuda-graph", action="store_true",
                    help="Enable cuda graphs (faster, uses more VRAM, needs a warm-up).")
     p.add_argument("--warmup-predictions", type=int, default=None,
@@ -108,7 +108,7 @@ def parse_args():
     return p.parse_args()
 
 
-def warmup_cameras(wrist: WristCamera, scene: RealSenseCapture,
+def warmup_cameras(wrist: WristCamera, scene: SceneCaptureBase,
                    timeout: float = 30.0) -> None:
     """Block until both cameras produce frames, or raise on timeout.
 
@@ -139,7 +139,7 @@ def warmup_cameras(wrist: WristCamera, scene: RealSenseCapture,
 
 
 def install_cleanup_handlers(follower: FollowerArm, wrist: WristCamera,
-                             scene: RealSenseCapture):
+                             scene: SceneCaptureBase):
     """Register an idempotent cleanup that fires on any exit path."""
     lock = threading.Lock()
     done = [False]
@@ -207,7 +207,8 @@ def main():
     wrist    = WristCamera(args.wrist_cam_id, flip=args.wrist_flip,
                            enable_ae=not args.no_wrist_ae)
     follower = FollowerArm(port=args.follower_port)
-    scene    = RealSenseCapture(serial=args.realsense_serial)
+
+    scene    = OpenCVCapture(cam_id=args.scene_cam_id)
 
     warmup_cameras(wrist, scene)
     follower.set_target(follower.get_state())  # latch current pose before torque-on
