@@ -115,7 +115,8 @@ class MolmoActPolicy:
         torch_dtype = DTYPES[dtype]
 
         print(f"[MolmoAct] Resolving snapshot for {repo_id}...")
-        local_dir = snapshot_download(repo_id)
+        # local_dir = snapshot_download(repo_id)
+        local_dir = "/coc/testnvme/chuang475/mellon/molmoact2_materialized"
         if apply_patches and dtype != "float32":
             _patch_model_for_mixed_dtype(local_dir)
 
